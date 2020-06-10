@@ -1,0 +1,3 @@
+[submodule "lib/mqttclient"]
+	path = lib/mqttclient
+	url = https://github.com/ismaelmds/kelvin-mqttclient.git
