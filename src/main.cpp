@@ -3,12 +3,13 @@
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
 #include <Wire.h>
+#include "mqttclient.h"
+#include "networkclient.h"
 
-const char *ssid = "BaconNet";
-const char *password = "5AlandaleClose//";
 const char *heaterHost = "192.168.68.200";
 const int heaterPort = 80;
 const int temperatureCheckDelay = 600000;
+const String hostName = "kelvin-sensor";
 
 BME280I2C::Settings settings(
     BME280::OSR_X1,
@@ -22,6 +23,7 @@ BME280I2C::Settings settings(
 );
 BME280I2C bme(settings);
 ESP8266WebServer server(80);
+NetworkClient net = NetworkClient(&hostName);
 
 float temp(NAN), hum(NAN), pres(NAN);
 float targetTemperature = 0.0;
@@ -127,10 +129,11 @@ void readSensor()
 void setup()
 {
     Serial.begin(9600);
-    delay(100);
-
-    Serial.println("Searching for BME280I2C sensor");
     Wire.begin();
+
+    net.connect();
+
+    Serial.print("\nSearching for BME280I2C sensor");
 
     while (!bme.begin())
     {
@@ -155,24 +158,6 @@ void setup()
 
     bme.setSettings(settings);
 
-    Serial.println("Connecting to ");
-    Serial.println(ssid);
-
-    //connect to your local wi-fi network
-    WiFi.begin(ssid, password);
-
-    //check wi-fi is connected to wi-fi network
-    while (WiFi.status() != WL_CONNECTED)
-    {
-        delay(1000);
-        Serial.print(".");
-    }
-
-    Serial.println("");
-    Serial.println("WiFi connected..!");
-    Serial.print("Got IP: ");
-    Serial.println(WiFi.localIP());
-
     server.on("/api/status", endpointStatus);
     server.on("/api/temperature", endpointSetTemperature);
     server.on("/api/boost", endpointBoost);
@@ -186,7 +171,8 @@ void setup()
 
 void loop()
 {
+    net.check();
+    server.handleClient();
     readSensor();
     checkTemperature();
-    server.handleClient();
 }
