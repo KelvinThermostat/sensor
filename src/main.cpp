@@ -8,6 +8,7 @@
 
 const char *heaterHost = "192.168.68.200";
 const int heaterPort = 80;
+const int sensorReadDelay = 120000;
 const int temperatureCheckDelay = 600000;
 const String hostName = "kelvin-sensor";
 
@@ -27,6 +28,7 @@ NetworkClient net = NetworkClient(&hostName);
 
 float temp(NAN), hum(NAN), pres(NAN);
 float targetTemperature = 0.0;
+ulong lastSensorReadCheck = 0;
 ulong lastTemperatureCheck = 0;
 bool heating = false;
 
@@ -114,6 +116,12 @@ void checkTemperature()
 
 void readSensor()
 {
+    if (lastSensorReadCheck > 0 && (millis() - lastSensorReadCheck) < sensorReadDelay)
+    {
+        return;
+    }
+
+    lastSensorReadCheck = millis();
     BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
     BME280::PresUnit presUnit(BME280::PresUnit_hPa);
 
