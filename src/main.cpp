@@ -1,186 +1,94 @@
+#include <Adafruit_BME280.h>
 #include <Arduino.h>
-#include <BME280I2C.h>
-#include <ESP8266HTTPClient.h>
-#include <ESP8266WebServer.h>
-#include <Wire.h>
-#include "mqttclient.h"
+#include <AsyncElegantOTA.h>
+#include <ESPAsyncTCP.h>
+#include <ESPAsyncWebServer.h>
 #include "networkclient.h"
 
-const char *heaterHost = "192.168.68.200";
-const int heaterPort = 80;
-const int sensorReadDelay = 120000;
-const int temperatureCheckDelay = 600000;
-const String hostName = "kelvin-sensor";
+const unsigned long DEFAULT_READ_DELAY = 30000;
+unsigned long _lastSensorReadCheck = 0;
+float _temperature = 0;
+float _pressure = 0;
+byte _humidity = 0;
 
-BME280I2C::Settings settings(
-    BME280::OSR_X1,
-    BME280::OSR_X1,
-    BME280::OSR_X1,
-    BME280::Mode_Forced,
-    BME280::StandbyTime_1000ms,
-    BME280::Filter_Off,
-    BME280::SpiEnable_False,
-    BME280I2C::I2CAddr_0x76 // I2C address. I2C specific.
-);
-BME280I2C bme(settings);
-ESP8266WebServer server(80);
-NetworkClient net = NetworkClient(&hostName);
+Adafruit_BME280 bme;
+AsyncWebServer server(80);
+NetworkClient net;
 
-float temp(NAN), hum(NAN), pres(NAN);
-float targetTemperature = 0.0;
-ulong lastSensorReadCheck = 0;
-ulong lastTemperatureCheck = 0;
-bool heating = false;
-
-void endpointBoost()
+void endpointNotFound(AsyncWebServerRequest *request)
 {
-}
-
-void endpointNotFound()
-{
-    server.send(404, "text/plain", "Not found");
-}
-
-void endpointSetTemperature()
-{
-    if (server.hasArg("target"))
-    {
-        targetTemperature = server.arg("target").toFloat();
-        lastTemperatureCheck = 0;
-        server.send(201);
-    }
-    else
-    {
-        server.send(400);
-    }
-}
-
-void endpointStatus()
-{
-    String jsonResult = "{\n";
-    jsonResult += "\"target_temperature\": ";
-    jsonResult += targetTemperature;
-    jsonResult += ",\n";
-    jsonResult += "\"actual_temperature\": ";
-    jsonResult += temp;
-    jsonResult += ",\n";
-    jsonResult += "\"humidity\": ";
-    jsonResult += hum;
-    jsonResult += ",\n";
-    jsonResult += "\"heating\": ";
-    jsonResult += heating ? "true" : "false";
-    jsonResult += "\n}";
-
-    server.send(200, "application/json", jsonResult);
-}
-
-void setHeatingState(bool state)
-{
-    String url = state ? "/on" : "/off";
-    HTTPClient http;
-    http.begin(heaterHost, heaterPort, url);
-    int httpCode = http.GET();
-    String success = "false";
-
-    if (httpCode == 201)
-    {
-        heating = state;
-    }
-}
-
-void checkTemperature()
-{
-    if (lastTemperatureCheck > 0 && millis() - lastTemperatureCheck < temperatureCheckDelay)
-    {
-        return;
-    }
-
-    lastTemperatureCheck = millis();
-    Serial.println("Checking temperature.");
-
-    if (!heating && targetTemperature > temp)
-    {
-        Serial.println("Starting heating.");
-        setHeatingState(true);
-    }
-    else if (heating && targetTemperature < temp)
-    {
-        Serial.println("Stop heating.");
-        setHeatingState(false);
-    }
-    else
-    {
-        Serial.println("No action needed. Next check in 10 minutes.");
-    }
+    request->send(200, "text/plain", F("Not found"));
 }
 
 void readSensor()
 {
-    if (lastSensorReadCheck > 0 && (millis() - lastSensorReadCheck) < sensorReadDelay)
+    if (_lastSensorReadCheck > 0 && (millis() - _lastSensorReadCheck) < DEFAULT_READ_DELAY)
     {
         return;
     }
 
-    lastSensorReadCheck = millis();
-    BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
-    BME280::PresUnit presUnit(BME280::PresUnit_hPa);
+    _lastSensorReadCheck = millis();
 
-    bme.read(pres, temp, hum, tempUnit, presUnit);
+    _temperature = bme.readTemperature();
+    _humidity = bme.readHumidity();
+    _pressure = bme.readPressure() / 100.0F;
+}
 
-    // Only one decimal place for temperature
-    temp = roundf(temp * 10) / 10;
+double round1(double value)
+{
+    return (int)(value * 10 + 0.5) / 10.0;
+}
 
-    // No decimal places for humidity
-    hum = truncf(hum);
+void endpointStatus(AsyncWebServerRequest *request)
+{
+    String jsonResult = "{";
+    jsonResult += "\"temperature\": ";
+    jsonResult += round1(_temperature);
+    jsonResult += ",";
+    jsonResult += "\"humidity\": ";
+    jsonResult += _humidity;
+    jsonResult += ",";
+    jsonResult += "\"pressure\": ";
+    jsonResult += round1(_pressure);
+    jsonResult += "}";
+
+    request->send(200, "application/json", jsonResult);
 }
 
 void setup()
 {
+    const String mDnsHost = "kelvin-sensor-" + String(ESP.getChipId());
+
     Serial.begin(9600);
-    Wire.begin();
 
     net.connect();
+    net.registerMdnsHost(mDnsHost);
 
-    Serial.print("\nSearching for BME280I2C sensor");
+    Serial.println(F("Searching for BME280I2C sensor"));
 
-    while (!bme.begin())
+    if (!bme.begin(0x76))
     {
-        Serial.print(".");
-        delay(1000);
+        Serial.println(F("Could not find a valid BME280 sensor"));
+        while (1)
+            delay(10);
+    }
+    else
+    {
+        Serial.println(F("BME280 sensor connected"));
     }
 
-    switch (bme.chipModel())
-    {
-    case BME280::ChipModel_BME280:
-        Serial.println("Found BME280 sensor! Success.");
-        break;
-    case BME280::ChipModel_BMP280:
-        Serial.println("Found BMP280 sensor! No Humidity available.");
-        break;
-    default:
-        Serial.println("Found UNKNOWN sensor! Error!");
-    }
-
-    // Change some settings before using.
-    settings.tempOSR = BME280::OSR_X4;
-
-    bme.setSettings(settings);
-
-    server.on("/api/status", endpointStatus);
-    server.on("/api/temperature", endpointSetTemperature);
-    server.on("/api/boost", endpointBoost);
+    server.on("/api/status", HTTP_GET, endpointStatus);
     server.onNotFound(endpointNotFound);
 
+    AsyncElegantOTA.begin(&server);
     server.begin();
-    Serial.println("HTTP server started");
 
-    setHeatingState(false);
+    Serial.println(F("HTTP server started"));
 }
 
 void loop()
 {
     net.check();
-    server.handleClient();
+
     readSensor();
-    checkTemperature();
 }
